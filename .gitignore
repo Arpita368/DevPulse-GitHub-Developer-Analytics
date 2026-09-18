@@ -2,3 +2,5 @@ frontend/node_modules/
 frontend/public/
 frontend/.env
 frontend/README.md
+backend/.env
+backend/venv/
