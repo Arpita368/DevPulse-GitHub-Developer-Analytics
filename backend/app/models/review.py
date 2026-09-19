@@ -1,13 +1,24 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
 class Review(Base):
     __tablename__ = "reviews"
+
+    __table_args__ = (
+        Index(
+            "idx_reviews_pull_request",
+            "pull_request_id"
+        ),
+        Index(
+            "idx_reviews_submitted_at",
+            "submitted_at"
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True,

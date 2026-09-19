@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Text
+from sqlalchemy import DateTime, ForeignKey, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -9,6 +9,21 @@ from app.db.base import Base
 class SyncJob(Base):
     __tablename__ = "sync_jobs"
 
+    __table_args__ = (
+        Index(
+            "idx_sync_jobs_repository",
+            "repository_id"
+        ),
+        Index(
+            "idx_sync_jobs_status",
+            "status"
+        ),
+        Index(
+            "idx_sync_jobs_user",
+            "user_id"
+        ),
+    )
+    
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True,
         default=uuid.uuid4

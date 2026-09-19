@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -9,6 +9,26 @@ from app.db.base import Base
 class Issue(Base):
     __tablename__ = "issues"
 
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_id",
+            "number",
+            name="issues_repository_id_number_key"
+        ),
+        Index(
+            "idx_issues_created_at",
+            "created_at"
+        ),
+        Index(
+            "idx_issues_repository",
+            "repository_id"
+        ),
+        Index(
+            "idx_issues_state",
+            "state"
+        ),
+    )
+    
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True,
         default=uuid.uuid4

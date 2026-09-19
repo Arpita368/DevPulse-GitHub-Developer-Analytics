@@ -4,11 +4,19 @@ from datetime import datetime
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from sqlalchemy import Index
+
 from app.db.base import Base
 
 class Repository(Base):
     __tablename__ = "repositories"
 
+    __table_args__ = (
+        Index(
+            "idx_repositories_github_account",
+            "github_account_id"
+        ),
+    )
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True,
         default=uuid.uuid4

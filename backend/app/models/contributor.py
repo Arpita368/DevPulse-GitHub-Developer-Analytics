@@ -1,13 +1,25 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
 class Contributor(Base):
     __tablename__ = "contributors"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_id",
+            "github_id",
+            name="contributors_repository_id_github_id_key"
+        ),
+        Index(
+            "idx_contributors_repository",
+            "repository_id"
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True,

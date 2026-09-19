@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -9,6 +9,26 @@ from app.db.base import Base
 class PullRequest(Base):
     __tablename__ = "pull_requests"
 
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_id",
+            "number",
+            name="pull_requests_repository_id_number_key"
+        ),
+        Index(
+            "idx_pull_requests_created_at",
+            "created_at"
+        ),
+        Index(
+            "idx_pull_requests_merged_at",
+            "merged_at"
+        ),
+        Index(  
+            "idx_pull_requests_repository",
+            "repository_id"
+        ),
+    )
+    
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True,
         default=uuid.uuid4
@@ -40,7 +60,7 @@ class PullRequest(Base):
         nullable=False
     )
 
-    author_username: Mapped[str] = mapped_column(
+    author_username: Mapped[str | None] = mapped_column(
         Text
     )
 
