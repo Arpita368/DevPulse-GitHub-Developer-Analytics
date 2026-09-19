@@ -1,0 +1,1 @@
+from app.schemas.profile import ProfileResponse

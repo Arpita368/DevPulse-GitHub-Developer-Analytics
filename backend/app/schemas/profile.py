@@ -3,6 +3,13 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+
+class ProfileUpdate(BaseModel):
+    username: str | None = None
+    full_name: str | None = None
+    avatar_url: str | None = None
+
+
 class ProfileResponse(BaseModel):
     id: UUID
     username: str | None
@@ -11,6 +18,4 @@ class ProfileResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    model_config = {
-        "from_attributes": True
-    }
+    model_config = {"from_attributes": True}
