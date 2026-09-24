@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import { GITHUB_LOGIN_SCOPES } from "../lib/github";
 
 function Login() {
   const [email, setEmail] = useState("");
@@ -68,6 +69,7 @@ function Login() {
       provider: "github",
       options: {
         redirectTo: `${window.location.origin}/dashboard`,
+        scopes: GITHUB_LOGIN_SCOPES,
       },
     });
 

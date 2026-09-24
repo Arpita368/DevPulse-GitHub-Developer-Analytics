@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import { GITHUB_LOGIN_SCOPES } from "../lib/github";
 
 function Register() {
   const [username, setUsername] = useState("");
@@ -99,6 +100,7 @@ function Register() {
       provider: "github",
       options: {
         redirectTo: `${window.location.origin}/dashboard`,
+        scopes: GITHUB_LOGIN_SCOPES,
       },
     });
 
