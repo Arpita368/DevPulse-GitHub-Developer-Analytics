@@ -6,7 +6,10 @@ from app.api.routes.health import router as health_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.profile import router as profile_router
 from app.api.routes.github import router as github_router
+from app.api.routes.repositories import router as repositories_router
+from app.api.routes.sync_jobs import router as sync_jobs_router
 from app.services.github_service import GithubServiceError
+from app.services.sync_service import SyncError
 
 app = FastAPI(
     title="DevPulse API",
@@ -28,10 +31,20 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(profile_router)
 app.include_router(github_router)
+app.include_router(repositories_router)
+app.include_router(sync_jobs_router)
 
 
 @app.exception_handler(GithubServiceError)
 async def github_service_error_handler(request: Request, exc: GithubServiceError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+
+
+@app.exception_handler(SyncError)
+async def sync_error_handler(request: Request, exc: SyncError):
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail}
