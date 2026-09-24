@@ -9,6 +9,7 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import GithubCallback from "./pages/GithubCallback";
+import Repositories from "./pages/Repositories";
 
 function App() {
   return (
@@ -34,6 +35,16 @@ function App() {
         <Route
           path="/dashboard"
           element={<Dashboard />}
+        />
+
+        <Route
+          path="/dashboard/repositories"
+          element={<Repositories />}
+        />
+
+        <Route
+          path="/repositories"
+          element={<Navigate to="/dashboard/repositories" replace />}
         />
 
         <Route
