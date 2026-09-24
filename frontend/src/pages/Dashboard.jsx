@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import AppShell from "../components/AppShell";
 import { supabase } from "../lib/supabase";
 import {
   disconnectGithub,
   fetchGithubStatus,
   linkGithubFromLogin,
   startGithubConnect,
+  fetchRepositories,
+  importRepositories,
 } from "../lib/github";
 import "./Dashboard.css";
+import "./Repositories.css";
 
 // Falls back to localhost for local dev, but can be overridden via
 // VITE_API_URL so the same build works against a deployed backend.
@@ -15,6 +19,7 @@ const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 function Dashboard() {
   const [user, setUser] = useState(null);
+  
   const [backendUser, setBackendUser] = useState(null);
   const [profile, setProfile] = useState(null);
 
@@ -37,6 +42,11 @@ function Dashboard() {
   const [githubAccount, setGithubAccount] = useState(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
+
+  const [repositories, setRepositories] = useState([]);
+  const [reposLoading, setReposLoading] = useState(false);
+  const [importingRepos, setImportingRepos] = useState(false);
+  const [repoNotice, setRepoNotice] = useState(null);
 
   // Outcome of the last GitHub action, e.g. when returning from GitHub.
   const [githubNotice, setGithubNotice] = useState(
@@ -72,35 +82,39 @@ function Dashboard() {
         return;
       }
 
-      const {
-        data: { session },
-        error: sessionError,
-      } = await supabase.auth.getSession();
-
-      if (sessionError) {
-        setError(sessionError.message);
-        setLoading(false);
-        return;
-      }
-
-      if (!session) {
-        window.location.href = "/login";
-        return;
-      }
-
-      setUser(session.user);
-
-      const headers = {
-        Authorization: `Bearer ${session.access_token}`,
-      };
+      // Fail the whole load after 12s so we never spin forever
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
 
       try {
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
+
+        if (sessionError) {
+          setError(sessionError.message);
+          return;
+        }
+
+        if (!session) {
+          window.location.href = "/login";
+          return;
+        }
+
+        setUser(session.user);
+
+        const headers = {
+          Authorization: `Bearer ${session.access_token}`,
+        };
+
         // 1. Verify backend authentication
         const authResponse = await fetch(`${API_BASE}/auth/me`, {
           headers,
+          signal: controller.signal,
         });
 
-        const authData = await authResponse.json();
+        const authData = await authResponse.json().catch(() => ({}));
 
         if (!authResponse.ok) {
           throw new Error(authData.detail || "Backend authentication failed");
@@ -112,9 +126,12 @@ function Dashboard() {
         const profileSyncResponse = await fetch(`${API_BASE}/profile/sync`, {
           method: "POST",
           headers,
+          signal: controller.signal,
         });
 
-        const profileSyncData = await profileSyncResponse.json();
+        const profileSyncData = await profileSyncResponse
+          .json()
+          .catch(() => ({}));
 
         if (!profileSyncResponse.ok) {
           throw new Error(
@@ -125,25 +142,24 @@ function Dashboard() {
         // 3. Fetch the complete profile
         const profileResponse = await fetch(`${API_BASE}/profile`, {
           headers,
+          signal: controller.signal,
         });
 
-        const profileData = await profileResponse.json();
+        const profileData = await profileResponse.json().catch(() => ({}));
 
         if (!profileResponse.ok) {
           throw new Error(profileData.detail || "Failed to load profile");
         }
 
         setProfile(profileData);
-
         setUsername(profileData.username || "");
         setFullName(profileData.full_name || "");
         setAvatarUrl(profileData.avatar_url || "");
 
-        // 4. GitHub connection. A problem here must not block the dashboard.
+        // 4. GitHub (must not block the rest of the dashboard)
         let linkedFromLogin = false;
 
         try {
-          // Signed in / registered with GitHub? Then it is connected already.
           linkedFromLogin = await linkGithubFromLogin(session);
         } catch (linkError) {
           setGithubNotice({ type: "error", text: linkError.message });
@@ -151,8 +167,18 @@ function Dashboard() {
 
         try {
           const githubStatus = await fetchGithubStatus();
-
           setGithubAccount(githubStatus.account);
+
+          // Repositories only exist once GitHub is connected.
+          if (githubStatus.account) {
+            try {
+              const repos = await fetchRepositories();
+              setRepositories(Array.isArray(repos) ? repos : []);
+            } catch {
+              // Not fatal: the Repositories panel has its own Refresh button.
+              setRepositories([]);
+            }
+          }
 
           if (linkedFromLogin) {
             setGithubNotice({
@@ -167,11 +193,19 @@ function Dashboard() {
           );
         }
       } catch (err) {
-        setError(err.message);
+        if (err.name === "AbortError") {
+          setError(
+            "Timed out talking to the backend. Is the FastAPI server running on http://127.0.0.1:8000?"
+          );
+        } else {
+          setError(err.message || "Failed to load dashboard");
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        setLoading(false);
       }
-
-      setLoading(false);
     };
+    
 
     loadDashboard();
   }, []);
@@ -222,11 +256,9 @@ function Dashboard() {
       }
 
       setProfile(data);
-
       setUsername(data.username || "");
       setFullName(data.full_name || "");
       setAvatarUrl(data.avatar_url || "");
-
       setProfileMessage("Profile updated successfully.");
       setShowEditProfile(false);
     } catch (err) {
@@ -237,84 +269,80 @@ function Dashboard() {
   };
 
   const handleAvatarUpload = async (event) => {
-  const file = event.target.files?.[0];
+    const file = event.target.files?.[0];
 
-  if (!file) {
-    return;
-  }
-
-  setProfileError("");
-  setProfileMessage("");
-
-  if (!supabase) {
-    setProfileError("Supabase is not configured.");
-    return;
-  }
-
-  if (!file.type.startsWith("image/")) {
-    setProfileError("Please select an image file.");
-    return;
-  }
-
-  if (file.size > 2 * 1024 * 1024) {
-    setProfileError("Avatar must be smaller than 2 MB.");
-    return;
-  }
-
-  setUploadingAvatar(true);
-
-  try {
-    const {
-      data: { user: currentUser },
-    } = await supabase.auth.getUser();
-
-    if (!currentUser) {
-      window.location.href = "/login";
+    if (!file) {
       return;
     }
 
-    const fileExtension =
-      file.name.split(".").pop()?.toLowerCase() || "png";
+    setProfileError("");
+    setProfileMessage("");
 
-    // Create a unique filename for every upload
-    const fileName = `avatar-${Date.now()}.${fileExtension}`;
-
-    const filePath = `${currentUser.id}/${fileName}`;
-
-    // Upload the new avatar
-    const { error: uploadError } = await supabase.storage
-      .from("avatars")
-      .upload(filePath, file, {
-        upsert: false,
-        contentType: file.type,
-      });
-
-    if (uploadError) {
-      throw uploadError;
+    if (!supabase) {
+      setProfileError("Supabase is not configured.");
+      return;
     }
 
-    // Get the public URL of the new avatar
-    const {
-      data: { publicUrl },
-    } = supabase.storage
-      .from("avatars")
-      .getPublicUrl(filePath);
+    if (!file.type.startsWith("image/")) {
+      setProfileError("Please select an image file.");
+      return;
+    }
 
-    // Save the new URL in React state
-    setAvatarUrl(publicUrl);
+    if (file.size > 2 * 1024 * 1024) {
+      setProfileError("Avatar must be smaller than 2 MB.");
+      return;
+    }
 
-    setProfileMessage(
-      "New avatar uploaded. Click Save changes to apply it."
-    );
-  } catch (err) {
-    setProfileError(err.message);
-  } finally {
-    setUploadingAvatar(false);
+    setUploadingAvatar(true);
 
-    // Allow selecting the same file again later
-    event.target.value = "";
-  }
-};
+    try {
+      const {
+        data: { user: currentUser },
+      } = await supabase.auth.getUser();
+
+      if (!currentUser) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const fileExtension =
+        file.name.split(".").pop()?.toLowerCase() || "png";
+
+      // Create a unique filename for every upload
+      const fileName = `avatar-${Date.now()}.${fileExtension}`;
+      const filePath = `${currentUser.id}/${fileName}`;
+
+      // Upload the new avatar
+      const { error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(filePath, file, {
+          upsert: false,
+          contentType: file.type,
+        });
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      // Get the public URL of the new avatar
+      const {
+        data: { publicUrl },
+      } = supabase.storage.from("avatars").getPublicUrl(filePath);
+
+      // Save the new URL in React state
+      setAvatarUrl(publicUrl);
+      setProfileMessage(
+        "New avatar uploaded. Click Save changes to apply it."
+      );
+    } catch (err) {
+      setProfileError(err.message);
+    } finally {
+      setUploadingAvatar(false);
+      // Allow selecting the same file again later
+      event.target.value = "";
+    }
+  };
+
   const handleCancelEdit = () => {
     setShowEditProfile(false);
     setProfileError("");
@@ -324,7 +352,6 @@ function Dashboard() {
     setFullName(profile?.full_name || "");
     setAvatarUrl(profile?.avatar_url || "");
   };
-  
 
   const handleConnectGithub = async () => {
     setGithubNotice(null);
@@ -345,7 +372,6 @@ function Dashboard() {
 
     try {
       const githubStatus = await disconnectGithub();
-
       setGithubAccount(githubStatus.account);
       setConfirmingDisconnect(false);
       setGithubNotice({
@@ -359,14 +385,47 @@ function Dashboard() {
     }
   };
 
-  const handleLogout = async () => {
-    if (!supabase) {
-      return;
+    const loadRepositories = async () => {
+    setReposLoading(true);
+    setRepoNotice(null);
+    try {
+      const repos = await fetchRepositories();
+      setRepositories(Array.isArray(repos) ? repos : []);
+    } catch (err) {
+      setRepoNotice({ type: "error", text: err.message });
+    } finally {
+      setReposLoading(false);
     }
-
-    await supabase.auth.signOut();
-    window.location.href = "/login";
   };
+
+  const handleImportRepositories = async () => {
+  if (!githubAccount) {
+    setRepoNotice({
+      type: "error",
+      text: "Connect GitHub before importing repositories.",
+    });
+    return;
+  }
+
+  setImportingRepos(true);
+  setRepoNotice(null);
+
+  try {
+    const result = await importRepositories();
+    setRepoNotice({
+      type: "success",
+      text: `Imported ${result.imported} repositories (job ${result.status}).`,
+    });
+    await loadRepositories();
+  } catch (err) {
+    setRepoNotice({
+      type: "error",
+      text: err.message || "Import failed",
+    });
+  } finally {
+    setImportingRepos(false); // critical — never leave this true
+  }
+};
 
   if (loading) {
     return (
@@ -382,119 +441,27 @@ function Dashboard() {
   }
 
   const displayName =
-    profile?.full_name || profile?.username || user?.email?.split("@")[0] || "Developer";
+    profile?.full_name ||
+    profile?.username ||
+    user?.email?.split("@")[0] ||
+    "Developer";
 
-  const initial = (profile?.full_name || profile?.username || user?.email || "U")
+  const initial = (
+    profile?.full_name ||
+    profile?.username ||
+    user?.email ||
+    "U"
+  )
     .charAt(0)
     .toUpperCase();
 
   return (
-    <div className="dashboard-shell">
-      {/* ================= SIDEBAR ================= */}
-
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">DP</div>
-
-          <div>
-            <h2>DevPulse</h2>
-            <span>Developer intelligence</span>
-          </div>
-        </div>
-
-        <nav className="sidebar-nav">
-          <div className="nav-section">
-            <span className="nav-label">WORKSPACE</span>
-
-            <a className="nav-item active" href="/dashboard">
-              <span className="nav-icon">⌂</span>
-              Overview
-            </a>
-
-            <a className="nav-item disabled" href="#repositories">
-              <span className="nav-icon">◈</span>
-              Repositories
-              <span className="coming-soon">Soon</span>
-            </a>
-
-            <a className="nav-item disabled" href="#activity">
-              <span className="nav-icon">◌</span>
-              Activity
-              <span className="coming-soon">Soon</span>
-            </a>
-
-            <a className="nav-item disabled" href="#analytics">
-              <span className="nav-icon">⌁</span>
-              Analytics
-              <span className="coming-soon">Soon</span>
-            </a>
-          </div>
-
-          <div className="nav-section">
-            <span className="nav-label">INTEGRATIONS</span>
-
-            <a className="nav-item" href="#github">
-              <span className="nav-icon">◉</span>
-              GitHub
-
-              {githubAccount && (
-                <span className="nav-status">Connected</span>
-              )}
-            </a>
-          </div>
-        </nav>
-
-        <div className="sidebar-bottom">
-          <div className="system-status">
-            <div className="status-dot"></div>
-
-            <div>
-              <strong>DevPulse Core</strong>
-              <span>Systems operational</span>
-            </div>
-          </div>
-
-          <button className="logout-button" onClick={handleLogout}>
-            <span>↪</span>
-            Logout
-          </button>
-        </div>
-      </aside>
-
-      {/* ================= MAIN ================= */}
-
-      <main className="dashboard-main">
-        {/* TOPBAR */}
-
-        <header className="topbar">
-          <div className="breadcrumb">
-            <span>Workspace</span>
-            <b>/</b>
-            <strong>Overview</strong>
-          </div>
-
-          <div className="topbar-right">
-            <div className="connection-status">
-              <span className="status-dot"></span>
-              Backend connected
-            </div>
-
-            <div className="avatar">
-              {avatarUrl ? (
-                <img
-                  src={avatarUrl}
-                  alt="Your avatar"
-                  className="topbar-avatar-image"
-                />
-              ) : (
-                initial
-              )}
-            </div>
-          </div>
-        </header>
-
-        {/* CONTENT */}
-
+    <AppShell
+      crumb="Overview"
+      githubConnected={Boolean(githubAccount)}
+      avatarUrl={avatarUrl}
+      initial={initial}
+    >
         <div className="dashboard-content">
           {/* HERO */}
 
@@ -557,7 +524,9 @@ function Dashboard() {
                     type="button"
                     className="edit-profile-toggle"
                     onClick={() =>
-                      showEditProfile ? handleCancelEdit() : setShowEditProfile(true)
+                      showEditProfile
+                        ? handleCancelEdit()
+                        : setShowEditProfile(true)
                     }
                   >
                     {showEditProfile ? "Cancel" : "✎ Edit"}
@@ -580,14 +549,20 @@ function Dashboard() {
                   </div>
 
                   <div className="profile-info">
-                    <h2>{profile?.full_name || profile?.username || "Developer"}</h2>
+                    <h2>
+                      {profile?.full_name ||
+                        profile?.username ||
+                        "Developer"}
+                    </h2>
 
                     <p>{user?.email || "Email unavailable"}</p>
 
                     <div className="profile-meta">
                       <span>
                         <b>ID</b>
-                        {backendUser?.id ? `${backendUser.id.slice(0, 8)}...` : "Unavailable"}
+                        {backendUser?.id
+                          ? `${backendUser.id.slice(0, 8)}...`
+                          : "Unavailable"}
                       </span>
 
                       <span>
@@ -646,8 +621,12 @@ function Dashboard() {
                     />
                   </div>
 
-                  {profileError && <p className="profile-error">{profileError}</p>}
-                  {profileMessage && <p className="profile-success">{profileMessage}</p>}
+                  {profileError && (
+                    <p className="profile-error">{profileError}</p>
+                  )}
+                  {profileMessage && (
+                    <p className="profile-success">{profileMessage}</p>
+                  )}
 
                   <div className="profile-form-actions">
                     <button
@@ -718,7 +697,9 @@ function Dashboard() {
 
                       <span className="github-connected-since">
                         Connected{" "}
-                        {new Date(githubAccount.created_at).toLocaleDateString()}
+                        {new Date(
+                          githubAccount.created_at
+                        ).toLocaleDateString()}
                       </span>
                     </div>
                   </div>
@@ -776,12 +757,102 @@ function Dashboard() {
                     disabled={githubBusy}
                   >
                     <span>◉</span>
-                    {githubBusy ? "Redirecting to GitHub..." : "Connect GitHub"}
+                    {githubBusy
+                      ? "Redirecting to GitHub..."
+                      : "Connect GitHub"}
                     <span className="arrow">→</span>
                   </button>
                 </>
               )}
             </div>
+          </section>
+            
+                    {/* ================= REPOSITORIES (summary) ================= */}
+
+          <section className="panel repo-summary" id="repositories">
+            <div className="panel-header">
+              <div>
+                <span className="panel-kicker">DATA</span>
+                <h3>Repositories</h3>
+              </div>
+
+              <div className="repo-summary-actions">
+                <button
+                  type="button"
+                  className="repo-btn small"
+                  onClick={loadRepositories}
+                  disabled={!githubAccount || reposLoading || importingRepos}
+                >
+                  {reposLoading ? "Refreshing…" : "Refresh"}
+                </button>
+
+                <button
+                  type="button"
+                  className="repo-btn small primary"
+                  onClick={handleImportRepositories}
+                  disabled={!githubAccount || importingRepos}
+                  title={
+                    !githubAccount
+                      ? "Connect GitHub first"
+                      : "Import owned repositories from GitHub"
+                  }
+                >
+                  {importingRepos ? "Importing from GitHub…" : "Import from GitHub"}
+                </button>
+              </div>
+            </div>
+
+            {repoNotice && (
+              <p className={`github-notice ${repoNotice.type}`}>
+                {repoNotice.text}
+              </p>
+            )}
+
+            {!githubAccount ? (
+              <p className="panel-description">
+                Connect GitHub first, then import your repositories.
+              </p>
+            ) : repositories.length === 0 ? (
+              <div className="repo-empty">
+                <div className="repo-empty-icon">◈</div>
+                <h4>No repositories imported yet</h4>
+                <p>
+                  Click <strong>Import from GitHub</strong> to pull your owned
+                  repositories into DevPulse.
+                </p>
+              </div>
+            ) : (
+              <>
+                <ul className="repo-summary-list">
+                  {repositories.slice(0, 5).map((repo) => (
+                    <li key={repo.id}>
+                      <a
+                        href={repo.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {repo.full_name}
+                      </a>
+
+                      <span>
+                        {repo.is_private ? "Private" : "Public"} ·{" "}
+                        {repo.synced_at
+                          ? `Synced ${new Date(repo.synced_at).toLocaleDateString()}`
+                          : "Never synced"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+
+                <div className="repo-summary-footer">
+                  <Link to="/dashboard/repositories">
+                    {repositories.length > 5
+                      ? `View all ${repositories.length} repositories →`
+                      : "Open Repositories to sync and explore →"}
+                  </Link>
+                </div>
+              </>
+            )}
           </section>
 
           {/* ANALYTICS PREVIEW */}
@@ -818,14 +889,18 @@ function Dashboard() {
 
                   <h4>
                     {githubAccount
-                      ? "GitHub connected"
+                      ? `${repositories.length} ${
+                          repositories.length === 1 ? "repository" : "repositories"
+                        } imported`
                       : "Waiting for your GitHub signal"}
                   </h4>
 
                   <p>
-                    {githubAccount
-                      ? "Repository, commit and pull request syncing comes next. Your activity timeline will appear here."
-                      : "Connect a GitHub account and DevPulse will begin building your engineering activity timeline."}
+                    {!githubAccount
+                      ? "Connect a GitHub account and DevPulse will begin building your engineering activity timeline."
+                      : repositories.length === 0
+                      ? "Import your repositories, then sync them to start building your activity timeline."
+                      : "Sync a repository from the Repositories tab. The activity timeline built from that data will appear here."}
                   </p>
                 </div>
               </div>
@@ -924,10 +999,24 @@ function Dashboard() {
                 </div>
               </div>
 
-              <div className="pipeline-line"></div>
+              <div
+                className={
+                  repositories.length > 0
+                    ? "pipeline-line completed-line"
+                    : "pipeline-line"
+                }
+              ></div>
 
-              <div className="pipeline-step">
-                <div className="step-number">03</div>
+              <div
+                className={
+                  repositories.length > 0
+                    ? "pipeline-step completed"
+                    : "pipeline-step"
+                }
+              >
+                <div className="step-number">
+                  {repositories.length > 0 ? "✓" : "03"}
+                </div>
 
                 <div>
                   <strong>GitHub sync</strong>
@@ -963,14 +1052,11 @@ function Dashboard() {
 
           <footer className="dashboard-footer">
             <span>DevPulse</span>
-
             <span>Developer intelligence platform</span>
-
             <span>Core build · v0.1</span>
           </footer>
         </div>
-      </main>
-    </div>
+    </AppShell>
   );
 }
 

@@ -190,3 +190,44 @@ export async function linkGithubFromLogin(session) {
 
   return true;
 }
+
+
+/* ------------------------------------------------------------------ */
+/* Repositories (Week 3)                                               */
+/* ------------------------------------------------------------------ */
+
+// GET /repositories → list[Repository]
+export function fetchRepositories() {
+  return request("/repositories");
+}
+
+// POST /repositories/import → { job_id, status, imported }
+export function importRepositories() {
+  return request("/repositories/import", { method: "POST" });
+}
+
+// POST /repositories/{id}/sync → { job_id, status, duration_ms, counts }
+export function syncRepository(repositoryId) {
+  return request(`/repositories/${repositoryId}/sync`, { method: "POST" });
+}
+
+// GET /sync-jobs?limit=20[&repository_id=...]
+export function fetchSyncJobs(limit = 20, repositoryId = null) {
+  const query = new URLSearchParams({ limit: String(limit) });
+
+  if (repositoryId) {
+    query.set("repository_id", repositoryId);
+  }
+
+  return request(`/sync-jobs?${query.toString()}`);
+}
+
+/* ------------------------------------------------------------------ */
+/* Profile (used by pages that need the avatar without the full load)  */
+/* ------------------------------------------------------------------ */
+
+// POST /profile/sync is idempotent: it returns the profile, creating it first
+// if this is the user's first visit.
+export function fetchProfile() {
+  return request("/profile/sync", { method: "POST" });
+}
