@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import {
+  disconnectGithub,
+  fetchGithubStatus,
+  linkGithubFromLogin,
+  startGithubConnect,
+} from "../lib/github";
 import "./Dashboard.css";
 
 // Falls back to localhost for local dev, but can be overridden via
@@ -23,6 +30,39 @@ function Dashboard() {
 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const [githubAccount, setGithubAccount] = useState(null);
+  const [githubBusy, setGithubBusy] = useState(false);
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
+
+  // Outcome of the last GitHub action, e.g. when returning from GitHub.
+  const [githubNotice, setGithubNotice] = useState(
+    location.state?.githubNotice ?? null
+  );
+
+  useEffect(() => {
+    // Show the notice once; refreshing the page shouldn't bring it back.
+    if (location.state?.githubNotice) {
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location, navigate]);
+
+  useEffect(() => {
+    // Coming back to this page with the browser's Back button after being
+    // sent to GitHub can restore it mid-redirect; re-enable the buttons.
+    const handlePageShow = (event) => {
+      if (event.persisted) {
+        setGithubBusy(false);
+      }
+    };
+
+    window.addEventListener("pageshow", handlePageShow);
+
+    return () => window.removeEventListener("pageshow", handlePageShow);
+  }, []);
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -98,6 +138,34 @@ function Dashboard() {
         setUsername(profileData.username || "");
         setFullName(profileData.full_name || "");
         setAvatarUrl(profileData.avatar_url || "");
+
+        // 4. GitHub connection. A problem here must not block the dashboard.
+        let linkedFromLogin = false;
+
+        try {
+          // Signed in / registered with GitHub? Then it is connected already.
+          linkedFromLogin = await linkGithubFromLogin(session);
+        } catch (linkError) {
+          setGithubNotice({ type: "error", text: linkError.message });
+        }
+
+        try {
+          const githubStatus = await fetchGithubStatus();
+
+          setGithubAccount(githubStatus.account);
+
+          if (linkedFromLogin) {
+            setGithubNotice({
+              type: "success",
+              text: "GitHub connected automatically from your GitHub login.",
+            });
+          }
+        } catch (statusError) {
+          setGithubNotice(
+            (current) =>
+              current ?? { type: "error", text: statusError.message }
+          );
+        }
       } catch (err) {
         setError(err.message);
       }
@@ -169,75 +237,84 @@ function Dashboard() {
   };
 
   const handleAvatarUpload = async (event) => {
-    const file = event.target.files?.[0];
+  const file = event.target.files?.[0];
 
-    if (!file) {
+  if (!file) {
+    return;
+  }
+
+  setProfileError("");
+  setProfileMessage("");
+
+  if (!supabase) {
+    setProfileError("Supabase is not configured.");
+    return;
+  }
+
+  if (!file.type.startsWith("image/")) {
+    setProfileError("Please select an image file.");
+    return;
+  }
+
+  if (file.size > 2 * 1024 * 1024) {
+    setProfileError("Avatar must be smaller than 2 MB.");
+    return;
+  }
+
+  setUploadingAvatar(true);
+
+  try {
+    const {
+      data: { user: currentUser },
+    } = await supabase.auth.getUser();
+
+    if (!currentUser) {
+      window.location.href = "/login";
       return;
     }
 
-    setProfileError("");
-    setProfileMessage("");
+    const fileExtension =
+      file.name.split(".").pop()?.toLowerCase() || "png";
 
-    if (!supabase) {
-      setProfileError("Supabase is not configured.");
-      return;
+    // Create a unique filename for every upload
+    const fileName = `avatar-${Date.now()}.${fileExtension}`;
+
+    const filePath = `${currentUser.id}/${fileName}`;
+
+    // Upload the new avatar
+    const { error: uploadError } = await supabase.storage
+      .from("avatars")
+      .upload(filePath, file, {
+        upsert: false,
+        contentType: file.type,
+      });
+
+    if (uploadError) {
+      throw uploadError;
     }
 
-    if (!file.type.startsWith("image/")) {
-      setProfileError("Please select an image file.");
-      return;
-    }
+    // Get the public URL of the new avatar
+    const {
+      data: { publicUrl },
+    } = supabase.storage
+      .from("avatars")
+      .getPublicUrl(filePath);
 
-    if (file.size > 2 * 1024 * 1024) {
-      setProfileError("Avatar must be smaller than 2 MB.");
-      return;
-    }
+    // Save the new URL in React state
+    setAvatarUrl(publicUrl);
 
-    setUploadingAvatar(true);
+    setProfileMessage(
+      "New avatar uploaded. Click Save changes to apply it."
+    );
+  } catch (err) {
+    setProfileError(err.message);
+  } finally {
+    setUploadingAvatar(false);
 
-    try {
-      const {
-        data: { user: currentUser },
-      } = await supabase.auth.getUser();
-
-      if (!currentUser) {
-        window.location.href = "/login";
-        return;
-      }
-
-      const fileExtension = file.name.split(".").pop()?.toLowerCase() || "png";
-      const filePath = `${currentUser.id}/avatar.${fileExtension}`;
-
-      const { error: uploadError } = await supabase.storage
-  .from("avatars")
-  .upload(filePath, file, {
-    upsert: true,
-    contentType: file.type,
-  });
-
-if (uploadError) {
-  throw uploadError;
-}
-
-const {
-  data: { publicUrl },
-} = supabase.storage
-  .from("avatars")
-  .getPublicUrl(filePath);
-
-setAvatarUrl(publicUrl);
-
-setProfileMessage(
-  "Avatar uploaded. Click Save changes to save your profile."
-);
-      
-    } catch (err) {
-      setProfileError(err.message);
-    } finally {
-      setUploadingAvatar(false);
-    }
-  };
-
+    // Allow selecting the same file again later
+    event.target.value = "";
+  }
+};
   const handleCancelEdit = () => {
     setShowEditProfile(false);
     setProfileError("");
@@ -246,6 +323,40 @@ setProfileMessage(
     setUsername(profile?.username || "");
     setFullName(profile?.full_name || "");
     setAvatarUrl(profile?.avatar_url || "");
+  };
+  
+
+  const handleConnectGithub = async () => {
+    setGithubNotice(null);
+    setGithubBusy(true);
+
+    try {
+      // Sends the browser to GitHub; on success nothing below this runs.
+      await startGithubConnect();
+    } catch (err) {
+      setGithubNotice({ type: "error", text: err.message });
+      setGithubBusy(false);
+    }
+  };
+
+  const handleDisconnectGithub = async () => {
+    setGithubNotice(null);
+    setGithubBusy(true);
+
+    try {
+      const githubStatus = await disconnectGithub();
+
+      setGithubAccount(githubStatus.account);
+      setConfirmingDisconnect(false);
+      setGithubNotice({
+        type: "success",
+        text: "GitHub account disconnected.",
+      });
+    } catch (err) {
+      setGithubNotice({ type: "error", text: err.message });
+    } finally {
+      setGithubBusy(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -322,10 +433,13 @@ setProfileMessage(
           <div className="nav-section">
             <span className="nav-label">INTEGRATIONS</span>
 
-            <a className="nav-item disabled" href="#github">
+            <a className="nav-item" href="#github">
               <span className="nav-icon">◉</span>
               GitHub
-              <span className="coming-soon">Soon</span>
+
+              {githubAccount && (
+                <span className="nav-status">Connected</span>
+              )}
             </a>
           </div>
         </nav>
@@ -551,7 +665,7 @@ setProfileMessage(
 
             {/* GITHUB CONNECTION */}
 
-            <div className="panel github-panel">
+            <div className="panel github-panel" id="github">
               <div className="github-decoration">◉</div>
 
               <div className="panel-header">
@@ -560,19 +674,113 @@ setProfileMessage(
                   <h3>GitHub workspace</h3>
                 </div>
 
-                <span className="integration-state">Not connected</span>
+                <span
+                  className={
+                    githubAccount
+                      ? "integration-state connected"
+                      : "integration-state"
+                  }
+                >
+                  {githubAccount ? "Connected" : "Not connected"}
+                </span>
               </div>
 
-              <p className="panel-description">
-                Connect GitHub to start importing repositories, commits, pull
-                requests, issues and contributor activity.
-              </p>
+              {githubNotice && (
+                <p className={`github-notice ${githubNotice.type}`}>
+                  {githubNotice.text}
+                </p>
+              )}
 
-              <button className="connect-button">
-                <span>◉</span>
-                Connect GitHub
-                <span className="arrow">→</span>
-              </button>
+              {githubAccount ? (
+                <div className="github-account">
+                  <div className="github-account-info">
+                    <div className="github-avatar">
+                      {githubAccount.avatar_url ? (
+                        <img
+                          src={githubAccount.avatar_url}
+                          alt={`${githubAccount.github_username} on GitHub`}
+                          className="dashboard-avatar-image"
+                        />
+                      ) : (
+                        githubAccount.github_username.charAt(0).toUpperCase()
+                      )}
+                    </div>
+
+                    <div>
+                      <a
+                        className="github-username"
+                        href={githubAccount.profile_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        @{githubAccount.github_username}
+                      </a>
+
+                      <span className="github-connected-since">
+                        Connected{" "}
+                        {new Date(githubAccount.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {!confirmingDisconnect ? (
+                    <button
+                      type="button"
+                      className="disconnect-button"
+                      onClick={() => setConfirmingDisconnect(true)}
+                      disabled={githubBusy}
+                    >
+                      Disconnect GitHub
+                    </button>
+                  ) : (
+                    <div className="disconnect-confirm">
+                      <p>
+                        This removes @{githubAccount.github_username} from
+                        DevPulse, along with the repositories and activity
+                        imported through it. You can reconnect at any time.
+                      </p>
+
+                      <div className="disconnect-actions">
+                        <button
+                          type="button"
+                          className="disconnect-confirm-button"
+                          onClick={handleDisconnectGithub}
+                          disabled={githubBusy}
+                        >
+                          {githubBusy ? "Disconnecting..." : "Yes, disconnect"}
+                        </button>
+
+                        <button
+                          type="button"
+                          className="disconnect-cancel-button"
+                          onClick={() => setConfirmingDisconnect(false)}
+                          disabled={githubBusy}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <p className="panel-description">
+                    Connect GitHub to start importing repositories, commits,
+                    pull requests, issues and contributor activity.
+                  </p>
+
+                  <button
+                    type="button"
+                    className="connect-button"
+                    onClick={handleConnectGithub}
+                    disabled={githubBusy}
+                  >
+                    <span>◉</span>
+                    {githubBusy ? "Redirecting to GitHub..." : "Connect GitHub"}
+                    <span className="arrow">→</span>
+                  </button>
+                </>
+              )}
             </div>
           </section>
 
@@ -608,11 +816,16 @@ setProfileMessage(
                 <div className="empty-message">
                   <div className="empty-icon">⌁</div>
 
-                  <h4>Waiting for your GitHub signal</h4>
+                  <h4>
+                    {githubAccount
+                      ? "GitHub connected"
+                      : "Waiting for your GitHub signal"}
+                  </h4>
 
                   <p>
-                    Connect a GitHub account and DevPulse will begin building
-                    your engineering activity timeline.
+                    {githubAccount
+                      ? "Repository, commit and pull request syncing comes next. Your activity timeline will appear here."
+                      : "Connect a GitHub account and DevPulse will begin building your engineering activity timeline."}
                   </p>
                 </div>
               </div>
@@ -658,13 +871,21 @@ setProfileMessage(
                   <span className="health-value">Synced</span>
                 </div>
 
-                <div className="health-row pending">
+                <div
+                  className={
+                    githubAccount ? "health-row" : "health-row pending"
+                  }
+                >
                   <div className="health-name">
-                    <span className="health-icon">○</span>
+                    <span className="health-icon">
+                      {githubAccount ? "◆" : "○"}
+                    </span>
                     GitHub API
                   </div>
 
-                  <span className="health-value">Awaiting connection</span>
+                  <span className="health-value">
+                    {githubAccount ? "Connected" : "Awaiting connection"}
+                  </span>
                 </div>
               </div>
             </div>
