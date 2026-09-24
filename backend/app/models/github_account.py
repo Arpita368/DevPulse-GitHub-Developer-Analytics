@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Text, DateTime, ForeignKey
+from sqlalchemy import BigInteger, Text, DateTime, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -31,6 +31,8 @@ class GithubAccount(Base):
         nullable=False
     )
 
+    # Stored encrypted (Fernet). Use app.services.github_service.get_access_token()
+    # to obtain the plaintext token when calling the GitHub API.
     access_token: Mapped[str] = mapped_column(
         Text,
         nullable=False
@@ -42,10 +44,13 @@ class GithubAccount(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        nullable=False
+        nullable=False,
+        server_default=func.now()
     )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        nullable=False
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now()
     )

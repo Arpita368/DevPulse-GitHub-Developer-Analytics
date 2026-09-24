@@ -1,9 +1,12 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routes.health import router as health_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.profile import router as profile_router
+from app.api.routes.github import router as github_router
+from app.services.github_service import GithubServiceError
 
 app = FastAPI(
     title="DevPulse API",
@@ -24,6 +27,15 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(profile_router)
+app.include_router(github_router)
+
+
+@app.exception_handler(GithubServiceError)
+async def github_service_error_handler(request: Request, exc: GithubServiceError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
 
 
 @app.get("/")
