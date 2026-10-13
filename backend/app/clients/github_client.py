@@ -172,6 +172,23 @@ class GithubClient:
 
         return response
 
+    def post(self, path: str, json: dict | None = None) -> httpx.Response:
+        try:
+            response = self._client.post(f"{GITHUB_API_URL}{path}", json=json)
+        except httpx.HTTPError as exc:
+            raise GithubApiError("Could not reach GitHub. Please try again.") from exc
+
+        if response.status_code == 401:
+            raise GithubTokenInvalid()
+        if response.status_code == 403:
+            raise GithubForbidden()
+        if response.status_code == 404:
+            raise GithubNotFound()
+        if response.status_code >= 400:
+            raise GithubApiError()
+
+        return response
+
     # ----------------------------------------------------------------
     # Pagination
     # ----------------------------------------------------------------

@@ -8,6 +8,8 @@ from app.api.routes.profile import router as profile_router
 from app.api.routes.github import router as github_router
 from app.api.routes.repositories import router as repositories_router
 from app.api.routes.sync_jobs import router as sync_jobs_router
+from app.api.routes.webhooks import router as webhooks_router
+from app.api.routes.events import router as events_router
 from app.services.github_service import GithubServiceError
 from app.services.sync_service import SyncError
 
@@ -33,6 +35,8 @@ app.include_router(profile_router)
 app.include_router(github_router)
 app.include_router(repositories_router)
 app.include_router(sync_jobs_router)
+app.include_router(webhooks_router)
+app.include_router(events_router)
 
 
 @app.exception_handler(GithubServiceError)

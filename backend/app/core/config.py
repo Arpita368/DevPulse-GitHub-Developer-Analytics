@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     # Fernet key used to encrypt GitHub access tokens before they are stored.
     TOKEN_ENCRYPTION_KEY: str
 
+    # ---- Live updates via GitHub webhooks (both optional) -------------------
+    # Shared secret used to verify X-Hub-Signature-256 on incoming webhooks.
+    GITHUB_WEBHOOK_SECRET: str | None = None
+    # Public HTTPS URL of this API (e.g. your ngrok URL in dev). GitHub cannot
+    # reach localhost, so without this no webhooks get registered.
+    WEBHOOK_PUBLIC_URL: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"
