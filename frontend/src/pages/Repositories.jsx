@@ -10,6 +10,7 @@ import {
   importRepositories,
   startGithubConnect,
   syncRepository,
+  subscribeToEvents,
 } from "../lib/github";
 import "./Dashboard.css";
 import "./Repositories.css";
@@ -75,6 +76,7 @@ function Repositories() {
   const [syncAll, setSyncAll] = useState(null); // { done, total, name } | null
   const [results, setResults] = useState({}); // repoId -> { counts, duration_ms }
   const [notice, setNotice] = useState(null);
+  const [live, setLive] = useState(false);
 
   const [query, setQuery] = useState("");
   const [visibility, setVisibility] = useState("all");
@@ -170,6 +172,48 @@ function Repositories() {
       setRefreshing(false);
     }
   };
+
+  /* ---------------------------- live updates --------------------------- */
+
+  // GitHub webhook -> backend -> this stream. Reload the data whenever
+  // something happens so counts and jobs stay current without clicking Sync.
+  useEffect(() => {
+    if (loading) return undefined;
+
+    let timer = null;
+
+    const stop = subscribeToEvents(
+      (event) => {
+        if (event.type !== "sync") {
+          const what =
+            event.type === "push"
+              ? `${event.count} new commit${event.count === 1 ? "" : "s"}`
+              : event.type === "pull_request"
+                ? `pull request #${event.number} ${event.action}`
+                : event.type === "issues"
+                  ? `issue #${event.number} ${event.action}`
+                  : "new review";
+
+          setNotice({
+            type: "success",
+            text: `Live: ${what} in ${event.repository}${
+              event.message ? ` — ${event.message}` : ""
+            }`,
+          });
+        }
+
+        // Debounce bursts (a push can fire several events at once).
+        clearTimeout(timer);
+        timer = setTimeout(() => loadData().catch(() => {}), 400);
+      },
+      setLive
+    );
+
+    return () => {
+      clearTimeout(timer);
+      stop();
+    };
+  }, [loading, loadData]);
 
   /* ------------------------------ actions ------------------------------ */
 
@@ -417,6 +461,12 @@ function Repositories() {
             </div>
           )}
         </section>
+
+        {live && (
+          <span style={{ color: "#4ade80", fontSize: 12, letterSpacing: 1 }}>
+            ● LIVE
+          </span>
+        )}
 
         {notice && (
           <p className={`repo-banner ${notice.type}`}>{notice.text}</p>

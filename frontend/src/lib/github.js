@@ -231,3 +231,65 @@ export function fetchSyncJobs(limit = 20, repositoryId = null) {
 export function fetchProfile() {
   return request("/profile/sync", { method: "POST" });
 }
+/* ------------------------------------------------------------------ */
+/* Live events (Server-Sent Events over fetch, so we can send the JWT) */
+/* ------------------------------------------------------------------ */
+
+// Calls onEvent(event) for every GitHub event the backend pushes.
+// Reconnects automatically. Returns a function that stops the stream.
+export function subscribeToEvents(onEvent, onStatus = () => {}) {
+  const controller = new AbortController();
+
+  const run = async () => {
+    while (!controller.signal.aborted) {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        if (!session) return;
+
+        const response = await fetch(`${API_BASE}/events/stream`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+          signal: controller.signal,
+        });
+
+        if (!response.ok || !response.body) throw new Error("stream failed");
+
+        onStatus(true);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const messages = buffer.split("\n\n");
+          buffer = messages.pop();
+
+          for (const message of messages) {
+            const line = message.split("\n").find((l) => l.startsWith("data: "));
+            if (!line) continue;
+            try {
+              onEvent(JSON.parse(line.slice(6)));
+            } catch {
+              /* ignore malformed event */
+            }
+          }
+        }
+      } catch {
+        if (controller.signal.aborted) return;
+      }
+
+      onStatus(false);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+  };
+
+  run();
+
+  return () => controller.abort();
+}
