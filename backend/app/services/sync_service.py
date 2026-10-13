@@ -18,7 +18,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -35,7 +35,7 @@ from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.models.review import Review
 from app.models.sync_job import SyncJob
-from app.services import github_mappers, github_service
+from app.services import event_bus, github_mappers, github_service, webhook_service
 
 logger = logging.getLogger(__name__)
 
@@ -125,10 +125,42 @@ def get_owned_repository(db: Session, user_id: uuid.UUID, repository_id: uuid.UU
     return repo
 
 
+def _attach_counts(db: Session, repos: list[Repository]) -> list[Repository]:
+    """Fill commit/PR/issue/contributor counts (RepositoryResponse reads them)."""
+
+    ids = [repo.id for repo in repos]
+    tables = {
+        "commit_count": Commit,
+        "pull_request_count": PullRequest,
+        "issue_count": Issue,
+        "contributor_count": Contributor,
+    }
+
+    counts: dict[str, dict] = {}
+    for attr, model in tables.items():
+        counts[attr] = (
+            dict(
+                db.execute(
+                    select(model.repository_id, func.count())
+                    .where(model.repository_id.in_(ids))
+                    .group_by(model.repository_id)
+                ).all()
+            )
+            if ids
+            else {}
+        )
+
+    for repo in repos:
+        for attr in tables:
+            setattr(repo, attr, counts[attr].get(repo.id, 0))
+
+    return repos
+
+
 def list_repositories(db: Session, user_id: uuid.UUID) -> list[Repository]:
     from app.models.github_account import GithubAccount
 
-    return list(
+    repos = list(
         db.scalars(
             select(Repository)
             .join(GithubAccount, Repository.github_account_id == GithubAccount.id)
@@ -136,6 +168,12 @@ def list_repositories(db: Session, user_id: uuid.UUID) -> list[Repository]:
             .order_by(Repository.updated_at.desc())
         )
     )
+    return _attach_counts(db, repos)
+
+
+def get_repository_with_counts(db: Session, user_id: uuid.UUID, repository_id: uuid.UUID) -> Repository:
+    repo = get_owned_repository(db, user_id, repository_id)
+    return _attach_counts(db, [repo])[0]
 
 
 def _require_account(db: Session, user_id: uuid.UUID):
@@ -233,6 +271,13 @@ def sync_repository(db: Session, user_id: uuid.UUID, repository_id: uuid.UUID) -
         db.commit()
 
         _finish_job(db, job, "completed")
+
+        # Keep this repo live from now on (no-op unless WEBHOOK_PUBLIC_URL is set).
+        webhook_service.ensure_webhook(db, account, repo)
+        event_bus.publish(
+            user_id,
+            {"type": "sync", "repository_id": str(repo.id), "repository": repo.full_name, "message": "Sync finished"},
+        )
         return job, counts
 
     except GithubClientError as exc:

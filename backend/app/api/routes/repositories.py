@@ -59,7 +59,7 @@ def get_repository(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return sync_service.get_owned_repository(db, _user_id(current_user), repository_id)
+    return sync_service.get_repository_with_counts(db, _user_id(current_user), repository_id)
 
 
 @router.post("/{repository_id}/sync", response_model=SyncResultResponse)
